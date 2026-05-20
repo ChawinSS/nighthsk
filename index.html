@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OPERA Column Extractor</title>
+
+  <style>
+    * { box-sizing: border-box; }
+
+    body {
+      font-family: Arial, Helvetica, sans-serif;
+      background: #f4f6f8;
+      margin: 0;
+      padding: 24px;
+      color: #222;
+    }
+
+    .container {
+      max-width: 1000px;
+      margin: 0 auto;
+      background: #fff;
+      padding: 24px;
+      border-radius: 14px;
+      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.08);
+    }
+
+    h1 {
+      margin-top: 0;
+      font-size: 24px;
+    }
+
+    textarea {
+      width: 100%;
+      min-height: 260px;
+      padding: 12px;
+      border: 1px solid #ccc;
+      border-radius: 10px;
+      font-family: Consolas, monospace;
+      font-size: 13px;
+      resize: vertical;
+    }
+
+    button {
+      margin-top: 12px;
+      padding: 10px 18px;
+      border: none;
+      border-radius: 10px;
+      background: #2563eb;
+      color: white;
+      font-weight: bold;
+      cursor: pointer;
+    }
+
+    button:hover {
+      background: #1d4ed8;
+    }
+
+    .status {
+      margin-top: 12px;
+      padding: 10px;
+      border-radius: 8px;
+      background: #eef2ff;
+      color: #3730a3;
+      display: none;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 20px;
+      font-size: 14px;
+    }
+
+    th, td {
+      border: 1px solid #ddd;
+      padding: 9px;
+      text-align: left;
+    }
+
+    th {
+      background: #f1f5f9;
+    }
+
+    tr:nth-child(even) {
+      background: #fafafa;
+    }
+
+    .floor-separator td {
+      height: 24px;
+      background: #fff;
+      border-left: none;
+      border-right: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>OPERA Room Extractor</h1>
+
+    <p>Paste the OPERA report text below. The app will display only these 4 columns:</p>
+    <p><strong>Room | Arrival | Departure | Category</strong></p>
+
+    <textarea id="inputText" placeholder="Paste OPERA report here..."></textarea>
+
+    <br>
+    <button onclick="extractData()">Extract</button>
+
+    <div id="status" class="status"></div>
+    <div id="result"></div>
+  </div>
+
+  <script>
+    function extractData() {
+      const text = document.getElementById('inputText').value.trim();
+      const result = document.getElementById('result');
+
+      result.innerHTML = '';
+      hideStatus();
+
+      if (!text) {
+        showStatus('Please paste the OPERA report first.');
+        return;
+      }
+
+      const cleanText = text.replaceAll(String.fromCharCode(13), '');
+      const lines = cleanText.split(String.fromCharCode(10)).filter(line => line.trim() !== '');
+
+      const headerLine = lines.find(line =>
+        line.includes('ROOM') &&
+        line.includes('ARRIVAL') &&
+        line.includes('DEPARTURE')
+      );
+
+      if (!headerLine) {
+        showStatus('Header not found. Please check the copied OPERA text.');
+        return;
+      }
+
+      const headers = headerLine.split('|').map(h => h.trim());
+      const roomIndex = headers.indexOf('ROOM');
+      const arrivalIndex = headers.indexOf('ARRIVAL') !== -1
+        ? headers.indexOf('ARRIVAL')
+        : headers.indexOf('CHAR_ARRIVAL');
+
+      const departureIndex = headers.indexOf('CHAR_DEPART') !== -1
+        ? headers.indexOf('CHAR_DEPART')
+        : headers.indexOf('DEPARTURE');
+
+      const categoryIndex = headers.indexOf('ROOM_CATEGORY');
+      const categoryLabelIndex = headers.indexOf('ROOM_CATEGORY_LABEL');
+
+      if (roomIndex === -1 || arrivalIndex === -1 || departureIndex === -1 || categoryIndex === -1) {
+        showStatus('Could not find Room, Arrival or Departure column.');
+        return;
+      }
+
+      const rows = [];
+
+      lines.forEach(line => {
+        if (line === headerLine) return;
+        if (line.startsWith('SUMBALANCEPERREPORT')) return;
+
+        const parts = line.split('|');
+        const room = clean(parts[roomIndex]);
+        const arrival = clean(parts[arrivalIndex]);
+        const departure = clean(parts[departureIndex]);
+
+        if (!room || !isOnlyNumbers(room)) return;
+
+        const category = findRoomCategory(parts, categoryIndex);
+        const floor = getFloor(room);
+        rows.push({ floor, room, arrival, departure, category });
+      });
+
+      if (rows.length === 0) {
+        showStatus('No valid room rows found.');
+        return;
+      }
+
+      rows.sort((a, b) => Number(a.room) - Number(b.room));
+
+      let html = '<table>';
+      html += '<thead><tr><th>Room</th><th>Arrival</th><th>Departure</th><th>Category</th></tr></thead>';
+      html += '<tbody>';
+
+      let lastFloor = '';
+
+      rows.forEach(row => {
+        if (lastFloor !== '' && row.floor !== lastFloor) {
+          html += '<tr class="floor-separator">';
+          html += '<td colspan="4"></td>';
+          html += '</tr>';
+        }
+
+        html += '<tr>';
+        html += '<td>' + escapeHtml(row.room) + '</td>';
+        html += '<td>' + escapeHtml(row.arrival) + '</td>';
+        html += '<td>' + escapeHtml(row.departure) + '</td>';
+        html += '<td>' + escapeHtml(row.category) + '</td>';
+        html += '</tr>';
+
+        lastFloor = row.floor;
+      });
+
+      html += '</tbody></table>';
+
+      result.innerHTML = html;
+      showStatus('Extracted ' + rows.length + ' rows.');
+    }
+
+    function clean(value) {
+      return value ? value.trim() : '';
+    }
+
+    function findRoomCategory(parts, categoryIndex) {
+      // First try the official ROOM_CATEGORY column
+      const directCategory = clean(parts[categoryIndex]);
+
+      // In OPERA exports, the expected column can sometimes shift.
+      // If the value is a number like 36675, it is not the real category.
+      if (directCategory && !isOnlyNumbers(directCategory)) {
+        return directCategory;
+      }
+
+      // Fallback: search the row for common room category codes
+      const knownCategories = [
+        'TWDS', 'DBLE', 'TRIP', 'QUAD', 'SING', 'TWIN',
+        'TW2S', 'COTR', 'FMTHRE', 'FMFOUR', 'DOUBLE',
+        'ZPLDBL', 'WETDBL', 'PPLDBL', 'VDOUBL', 'VFMTHR',
+        'BRFDBL'
+      ];
+
+      for (const value of parts) {
+        const cleanedValue = clean(value);
+        if (knownCategories.includes(cleanedValue)) {
+          return cleanedValue;
+        }
+      }
+
+      // Last fallback: search for short uppercase category-like codes
+      for (const value of parts) {
+        const cleanedValue = clean(value);
+        if (
+          cleanedValue.length >= 3 &&
+          cleanedValue.length <= 8 &&
+          cleanedValue === cleanedValue.toUpperCase() &&
+          !isOnlyNumbers(cleanedValue) &&
+          !cleanedValue.includes('-') &&
+          !cleanedValue.includes('.')
+        ) {
+          return cleanedValue;
+        }
+      }
+
+      return directCategory;
+    }
+
+    function isOnlyNumbers(value) {
+      return value.split('').every(char => char >= '0' && char <= '9');
+    }
+
+    function getFloor(room) {
+      // Example: 325 -> 3rd floor
+      if (!room || room.length < 1) return '';
+      return room.charAt(0);
+    }
+
+    function showStatus(message) {
+      const status = document.getElementById('status');
+      status.textContent = message;
+      status.style.display = 'block';
+    }
+
+    function hideStatus() {
+      document.getElementById('status').style.display = 'none';
+    }
+
+    function escapeHtml(value) {
+      return String(value || '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#039;');
+    }
+  </script>
+</body>
+</html>
